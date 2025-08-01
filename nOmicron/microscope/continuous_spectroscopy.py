@@ -187,8 +187,8 @@ def get_point_spectra(channel_name, target_position, start_end, sample_time, sam
     else:
         return x_data, y_data
 
-def get_compressed_sensing_scan_spectra(channel_name, inputProbDensArray, p, drift, display_filepath=None, start_end, sample_time, sample_points,
-                      repeats=1, forward_back=True, return_filename=False):
+def get_compressed_sensing_scan_spectra(channel_name, inputProbDensArray, p, drift, start_end, sample_time, sample_points,
+                      repeats=1, forward_back=True, return_filename=False, display_filepath=None):
     """
     Go to a position and perform fixed point spectroscopy.
 
@@ -255,7 +255,6 @@ def get_compressed_sensing_scan_spectra(channel_name, inputProbDensArray, p, dri
     [y_data.append([None] * (bool(forward_back) + 1)) for i in range(repeats)]  # Can't use [] ** repeats
 
     def view_spectroscopy_callback():
-        global view_count, view_name, x_data, y_data
         pbar.update(1)
         view_count += 1
         view_name = [mo.view.Run_Count(), mo.view.Cycle_Count()]
@@ -309,7 +308,6 @@ def get_compressed_sensing_scan_spectra(channel_name, inputProbDensArray, p, dri
             y_data_total_lst.append(y_data)
 
         # Reset data-taking variables
-        global view_count, view_name, x_data, y_data
         modes = {"V": 0, "Z": 1, "Varied Z": 2}  # Varied Z not fully supported yet!
         max_count = (repeats * (forward_back + 1))
         view_count = 0
