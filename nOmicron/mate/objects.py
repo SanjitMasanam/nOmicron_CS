@@ -636,6 +636,16 @@ class _XYScanner(object):
         a = _process(p, [self, "Y_Trace_Trigger"], a, test)
         return a
 
+    def Enable_Z_Profiling(self, a=None, test=False):
+        p = "boolean"
+        a = _process(p, [self, "Enable_Z_Profiling"], a, test)
+        return a
+
+    def Z_Profiling_Delay_T3(self, a=None, test=False):
+        p = "double"
+        a = _process(p, [self, "Z_Profiling_Delay_T3"], a, test)
+        return a
+
     def move(self):
         """Move the tip to the position set with Target_Position"""
         p = 'function'

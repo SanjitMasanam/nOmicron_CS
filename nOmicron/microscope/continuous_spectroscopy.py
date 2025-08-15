@@ -1,14 +1,16 @@
 # Oliver Gordon, 2019
 # Compressed Sensing Implementation, Sanjit Masanam, 2025
 
+import signal, sys, time
+
 import numpy as np
 import random, math
 import matplotlib.pyplot as plt
 from scipy.spatial.distance import cdist
+from tqdm import tqdm
 
 from nOmicron.mate import objects as mo
 from nOmicron.microscope import IO
-from tqdm import tqdm
 
 def get_continuous_signal(channel_name, sample_time, sample_points):
     """Acquire a continuous signal.
@@ -85,7 +87,7 @@ def get_point_spectra(channel_name, target_position, start_end, sample_time, sam
     Parameters
     ----------
     channel_name : str
-        The channel to acquire from, e.g. I_V, Z_V, Aux2_V
+        The channel to acquire from, e.g. I(V), Z(V), Aux2(V)
     target_position : list
         [x, y] in the range -1,1. Can be converted from real nm units with utils.convert...
     start_end : tuple
@@ -188,14 +190,14 @@ def get_point_spectra(channel_name, target_position, start_end, sample_time, sam
         return x_data, y_data
 
 def get_compressed_sensing_scan_spectra(channel_name, inputProbDensArray, p, drift, start_end, sample_time, sample_points,
-                      repeats=1, forward_back=True, return_filename=False, display_filepath=None):
+                      repeats=1, forward_back=False, return_filename=False, display_filepath=None, verbose=1):
     """
     Go to a position and perform fixed point spectroscopy.
 
     Parameters
     ----------
     channel_name : str
-        The channel to acquire from, e.g. I_V, Z_V, Aux2_V
+        The channel to acquire from, e.g. I(V), Z(V), Aux2(V)
     inputProbDensArray : array, shape (n, n)
         Probability density array to guide random sampling to ignore/prioritize certain regions of window
     p : int
@@ -240,7 +242,7 @@ def get_compressed_sensing_scan_spectra(channel_name, inputProbDensArray, p, dri
     >>> IO.disconnect()
     """
 
-    approx_optimal_path_arr, approx_optimal_path_length = compressedSensing(inputProbDensArray, p, drift, display_filepath)
+    approx_optimal_path_arr, approx_optimal_path_length = compressedSensing(inputProbDensArray, p, drift, verbose, display_filepath)
 
     x_data_total_lst = []
     y_data_total_lst = []
@@ -255,6 +257,7 @@ def get_compressed_sensing_scan_spectra(channel_name, inputProbDensArray, p, dri
     [y_data.append([None] * (bool(forward_back) + 1)) for i in range(repeats)]  # Can't use [] ** repeats
 
     def view_spectroscopy_callback():
+        global view_count, view_name, x_data, y_data
         pbar.update(1)
         view_count += 1
         view_name = [mo.view.Run_Count(), mo.view.Cycle_Count()]
@@ -266,6 +269,17 @@ def get_compressed_sensing_scan_spectra(channel_name, inputProbDensArray, p, dri
         if packet_count == 1:
             y_data[cycle_count][packet_count] = np.flip(y_data[cycle_count][packet_count])
 
+    # Setting up script cleanup on hard exit
+    def signal_handler(sig, frame):
+        print('\n *gasp* You pressed Ctrl+C! Fret not, we are exiting gracefully.')
+        mo.xy_scanner.Trigger_Execute_At_Target_Position(False)
+        mo.xy_scanner.Return_To_Stored_Position(True)
+        mo.xy_scanner.Store_Current_Position(False)
+        IO.disable_channel()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
+
     # Set all the parameters
     IO.enable_channel(channel_name)
     mo.spectroscopy.Spectroscopy_Mode(modes[channel_name[-2]])
@@ -275,6 +289,8 @@ def get_compressed_sensing_scan_spectra(channel_name, inputProbDensArray, p, dri
     getattr(mo.spectroscopy, f"Device_{modes[channel_name[-2]] + 1}_End")(start_end[1])
     getattr(mo.spectroscopy, f"Device_{modes[channel_name[-2]] + 1}_Repetitions")(repeats)
     getattr(mo.spectroscopy, f"Enable_Device_{modes[channel_name[-2]] + 1}_Ramp_Reversal")(forward_back)
+
+    if verbose > 0: print("Parameter setup complete. Starting sparse scan.")
 
     for x, y in approx_optimal_path_arr:
         # Set up spec
@@ -291,6 +307,11 @@ def get_compressed_sensing_scan_spectra(channel_name, inputProbDensArray, p, dri
         while view_count < max_count and mo.mate.rc == mo.mate.rcs['RMT_SUCCESS']:
             mo.wait_for_event()
         mo.view.Data()
+
+        # Do not return to the original position
+        mo.xy_scanner.Trigger_Execute_At_Target_Position(False)
+        mo.xy_scanner.Return_To_Stored_Position(False)
+        mo.xy_scanner.Store_Current_Position(False)
 
         # Parse and append data to total data lists
         if not forward_back:
@@ -315,6 +336,8 @@ def get_compressed_sensing_scan_spectra(channel_name, inputProbDensArray, p, dri
         y_data = []
         [y_data.append([None] * (bool(forward_back) + 1)) for i in range(repeats)]  # Can't use [] ** repeats
 
+    if verbose > 0: print("Sparse scan complete. Returning to start position and saving data.")
+
     # Return to normal
     mo.xy_scanner.Trigger_Execute_At_Target_Position(False)
     mo.xy_scanner.Return_To_Stored_Position(True)
@@ -323,7 +346,7 @@ def get_compressed_sensing_scan_spectra(channel_name, inputProbDensArray, p, dri
 
     return x_data_total_lst, y_data_total_lst, filename_total_lst
 
-def compressedSensing(inputProbDensArray, p, drift, display_filepath=None):
+def compressedSensing(inputProbDensArray, p, drift, verbose=1, display_filepath=None):
     '''
     Compressed Sensing implemention with a NN-TSP algorithm
 
@@ -360,8 +383,8 @@ def compressedSensing(inputProbDensArray, p, drift, display_filepath=None):
     flat_input = inputProbDensArray.flatten()/np.sum(inputProbDensArray.flatten())
     choice_1D_arr = np.linspace(0, len(flat_input)-1, num=len(flat_input))
     TSP_points = np.random.choice(a=choice_1D_arr, size=math.ceil(p*len(flat_input)), replace=False, p=flat_input)
-    print("# of measurement points", len(TSP_points))
 
+    if verbose > 0: print("# of measurement points", len(TSP_points))
 
     scale_const = 2/(inputProbDensArray.shape[0]-1)
 
@@ -380,6 +403,8 @@ def compressedSensing(inputProbDensArray, p, drift, display_filepath=None):
         if np.abs(x)+np.abs(y) > max_sum:
             max_sum, start_n = np.abs(x)+np.abs(y), n
         n += 1
+    
+    if verbose > 0: print("TSP coordinates calculated.")
 
     start_coord = coord_arr[start_n]
 
@@ -433,6 +458,7 @@ def compressedSensing(inputProbDensArray, p, drift, display_filepath=None):
     approx_optimal_path = nn_tsp_matrix(coord_arr, start_n)
     approx_optimal_path_length = tour_length(approx_optimal_path)
     approx_optimal_path_arr = np.array(approx_optimal_path)
+    if verbose > 0: print("TSP (approx) optimally solved. Path & length calculated.")
 
     if display_filepath != None:
         fig, ax = plt.subplots()
@@ -443,7 +469,7 @@ def compressedSensing(inputProbDensArray, p, drift, display_filepath=None):
         plt.legend()
         fig.set_size_inches(8, 6)   
         plt.savefig(display_filepath)
-    
+
     return approx_optimal_path_arr, approx_optimal_path_length
 
 if __name__ == '__main__':

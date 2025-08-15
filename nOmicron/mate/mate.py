@@ -1,21 +1,15 @@
-#   Code up to mate4dummies 0.4.2 (at time of branch) is Copyright © 2015 - 2018 Stephan Zevenhuizen
-#   MATE, (20-08-2018).
-#   Additional changes by Oliver Gordon, 2019
-import ctypes
-import os
-import re
-import sys
-import time
+# -*- coding: utf-8 -*-
+#
+#   Copyright © 2013 - 2020 Stephan Zevenhuizen
+#   MATE, (28-06-2020).
+#
+
+import re, ctypes, sys, os, time, psutil, pefile
 import xml.etree.ElementTree as ET
-
-import pefile
-import psutil
-from natsort import natsort
-
-from nOmicron.utils import errors
 
 
 class MATE(object):
+
     class ValueType:
         vt_INTEGER = 1
         vt_DOUBLE = 2
@@ -24,6 +18,16 @@ class MATE(object):
         vt_ENUM = 5
         vt_PAIR = 6
         vt_ARRAY_OF_DOUBLE = 7
+
+    class Channel(object):
+
+        def __init__(self, name, display_name):
+            self.name = name
+            self.display_name = display_name
+
+
+    class Channels(object):
+        pass
 
     class String(ctypes.Structure):
         _fields_ = [('length', ctypes.c_int),
@@ -68,25 +72,28 @@ class MATE(object):
         self.log = log
         self.exit_handler2 = exit_handler2
         self.testmode = testmode
-        self.rcs = dict(RMT_DEBUG=0x00000000,
-                        RMT_SUCCESS=0x00000001,
-                        RMT_UNEXPECTEDRESPONSE=0x00000002,
-                        RMT_LIBNOTLOADABLE=0x00000004,
-                        RMT_INTERNALFAILURE=0x00000006,
-                        RMT_NOSERVER=(0x00000010 | 0x00000002),
-                        RMT_NOEVENT=(0x00000020 | 0x00000003),
-                        RMT_INCOMPATIBLEPROTOCOL=(0x00000010 | 0x00000004),
-                        RMT_DISCONNECTED=(0x00000010 | 0x00000006),
-                        RMT_UNSUPPORTEDREQ=(0x00000020 | 0x00000005),
-                        RMT_UNKNOWNOBJECT=(0x00000020 | 0x00000002),
-                        RMT_UNKNOWNPROPERTY=(0x00000020 | 0x00000004),
-                        RMT_INVALIDTYPE=(0x00000020 | 0x00000006),
-                        RMT_REJECTED=(0x00000020 | 0x00000008))
+        self.rcs = dict(RMT_DEBUG                =  0x00000000,
+                        RMT_SUCCESS              =  0x00000001,
+                        RMT_UNEXPECTEDRESPONSE   =  0x00000002,
+                        RMT_LIBNOTLOADABLE       =  0x00000004,
+                        RMT_INTERNALFAILURE      =  0x00000006,
+                        RMT_NOSERVER             = (0x00000010 | 0x00000002),
+                        RMT_NOEVENT              = (0x00000020 | 0x00000003),
+                        RMT_INCOMPATIBLEPROTOCOL = (0x00000010 | 0x00000004),
+                        RMT_DISCONNECTED         = (0x00000010 | 0x00000006),
+                        RMT_UNSUPPORTEDREQ       = (0x00000020 | 0x00000005),
+                        RMT_UNKNOWNOBJECT        = (0x00000020 | 0x00000002),
+                        RMT_UNKNOWNPROPERTY      = (0x00000020 | 0x00000004),
+                        RMT_INVALIDTYPE          = (0x00000020 | 0x00000006),
+                        RMT_REJECTED             = (0x00000020 | 0x00000008))
         self.experiments_directory = ''
         self.online = False
+        self.scope = ''
+        self.eeis = []
+        self.channels = self.Channels()
         self.is_ran_down = True
         self.rc = self.rcs['RMT_SUCCESS']
-        pe = pefile.PE(sys.executable, fast_load=True)
+        pe = pefile.PE(sys.executable, fast_load = True)
         self.machine = pe.FILE_HEADER.Machine
         pe.close()
 
@@ -127,7 +134,7 @@ class MATE(object):
             elif p[1] == 'getEnum':
                 e = ctypes.c_int()
                 rc = self.lib_mate.getEnumProperty(p[2], -1,
-                                                   ctypes.byref(e))
+                                                  ctypes.byref(e))
                 out = e.value
             elif p[1] == 'getDouble':
                 d = ctypes.c_double()
@@ -205,34 +212,33 @@ class MATE(object):
                 rc = 0
                 out = p[0]
             if (rc != self.rcs['RMT_SUCCESS'] and
-                    rc != self.rcs['RMT_NOEVENT'] and
-                    rc != self.rcs['RMT_UNKNOWNOBJECT']):
+                rc != self.rcs['RMT_NOEVENT'] and
+                rc != self.rcs['RMT_UNKNOWNOBJECT']):
                 out = p[0]
                 self.log.AppendText('MATRIX error, response: ' +
                                     self.rc_key(rc) + '.\n')
         else:
             out = p[0]
-        self.check_for_response_error(rc)
         return out, rc
 
-    def deployment_parameter(self, scope, eei_name, dp_name):
-        path = self.experiments_directory
-        try:
-            tree = ET.parse(os.path.join(path, scope + '.exps'))
-            root = tree.getroot()
-            tag = 'ExperimentElementInstance'
-            p = re.compile(r'^{.*?}(.*)')
-            elements = [i for i in root if p.match(i.tag).group(1) == tag]
-            eei = [i for i in elements if i.get('name') == eei_name]
-            if len(eei) == 1:
-                dp = [i for i in eei[0] if i.get('name') == dp_name]
-                if len(dp) == 1:
-                    value = dp[0].get('value').split('::')[0]
-                else:
-                    value = ''
-            else:
-                value = ''
-        except:
+    def _dp_from_eei(self, eei, dp_name):
+        dp = [i for i in eei if i.get('name') == dp_name]
+        if len(dp) == 1:
+            value = dp[0].get('value').split('::')[0]
+        else:
+            value = ''
+        return value
+
+    def deployment_parameter(self, eei_name, dp_name, dummy = None):
+        # Backward compatibility
+        if dummy:
+            eei_name = dp_name
+            dp_name = dummy
+        ###
+        eei = [i for i in self.eeis if i.get('name') == eei_name]
+        if len(eei) == 1:
+            value = self._dp_from_eei(eei[0], dp_name)
+        else:
             value = ''
         return value
 
@@ -257,9 +263,25 @@ class MATE(object):
                      (rc == self.rcs['RMT_UNKNOWNOBJECT'])) and i[0] < l - 1 and
                     ((state == 'closed') or (state == '')))
         if ((rc == self.rcs['RMT_SUCCESS']) and (state != 'closed')) or \
-                self.testmode:
+           self.testmode:
             self.scope = i[1]
             self.lib_mate.setScopeName(i[1].encode())
+            try:
+                tree = ET.parse(os.path.join(path, self.scope + '.exps'))
+                root = tree.getroot()
+                tag = 'ExperimentElementInstance'
+                p = re.compile(r'^{.*?}(.*)')
+                self.eeis = [i for i in root if p.match(i.tag).group(1) == tag]
+                eei_channels = [i for i in self.eeis
+                                if i.get('elementType') == 'Channel']
+                for eei_channel in eei_channels:
+                    name = eei_channel.get('name')
+                    display_name = self._dp_from_eei(eei_channel, 'Name')
+                    setattr(self.channels, name, self.Channel(name,
+                                                              display_name))
+            except:
+                self.eeis = []
+                self.channels = self.Channels()
             name = 'testmode'
             rfn = time.strftime('%Y%m%d-%H%M%S', time.localtime()) + \
                   '_' + name
@@ -281,10 +303,7 @@ class MATE(object):
                                     self.exp_params[parameter] + '.\n')
             self.online = (rc == self.rcs['RMT_SUCCESS']) or self.testmode
         else:
-            self.scope = ''
             self.log.AppendText('No open experiments found.\n')
-            self.online = False
-        self.check_for_response_error(rc)
 
     def connect(self):
         bin_sub_path = 'Bin\\Matrix.exe'
@@ -305,8 +324,6 @@ class MATE(object):
                 installation_directory = p_path[:-(len(bin_sub_path) + 1)]
                 library_path = os.path.join(installation_directory,
                                             library_sub_path)
-                self.installation_directory = installation_directory
-                self.library_path = library_path
                 ok = os.path.exists(library_path)
             try:
                 p = next(ps)
@@ -335,14 +352,11 @@ class MATE(object):
                         co = st_entries[0].entries[b'CompanyName'].decode()
                 pe.close()
         if co:
+            exp_sub_path = 'MATRIX\\default_V4_3_2\\Experiments'
             user_config_dir = os.environ['APPDATA']
-            all_default_paths = natsort.natsorted(os.listdir(f"{user_config_dir}\\{co}\\MATRIX"))
-            self.matrix_dir = all_default_paths[-1]
-            exp_sub_path = f'MATRIX\\{all_default_paths[-1]}\\Experiments'
             self.experiments_directory = os.path.join(user_config_dir, co,
                                                       exp_sub_path)
             self.lib_mate = ctypes.cdll.LoadLibrary(library_path)
-            self.library_path = library_path
             self.lib_mate.setHost(b'localhost')
             self.disconnect()
             if self.is_ran_down or self.testmode:
@@ -362,8 +376,6 @@ class MATE(object):
             self.log.AppendText('Connecting to the MATRIX, response: '
                                 '---.\n')
 
-        self.check_for_response_error(self.rc)
-
     def disconnect(self):
         if not self.is_ran_down:
             rc = self.lib_mate.rundown()
@@ -371,28 +383,7 @@ class MATE(object):
                                 self.rc_key(rc) + '.\n')
             self.is_ran_down = (rc == self.rcs['RMT_SUCCESS'])
             self.online = False
+            self.scope = ''
+            self.eeis = []
+            self.channels = self.Channels()
             self.rc = rc
-
-            self.check_for_response_error(self.rc)
-
-    def check_for_response_error(self, rc):
-        rc_key = self.rc_key(rc)
-
-        if rc_key == "RMT_UNEXPECTEDRESPONSE":
-            raise errors.MatrixUnexpectedResponseError
-        elif rc_key == "RMT_LIBNOTLOADABLE":
-            raise errors.MateLibNotLoadableError
-        elif rc_key == "RMT_INTERNALFAILURE":
-            raise errors.MatrixCriticalHardwareFailureError
-        elif rc_key == "RMT_NOSERVER":
-            raise errors.MatrixNotInitialisedError
-        elif rc_key == "RMT_INCOMPATIBLEPROTOCOL":
-            raise errors.MatrixIncompatibleProtocolError
-        elif rc_key == "RMT_UNSUPPORTEDREQ":
-            raise errors.MatrixUnsupportedReqError
-        elif rc_key in ["RMT_UNKNOWNOBJECT", "RMT_UNKNOWNPROPERTY"]:
-            raise errors.MatrixUnsupportedOperationError
-        elif rc_key == "RMT_INVALIDTYPE":
-            raise errors.MatrixInvalidDataTypeError
-        elif rc_key == "RMT_REJECTED":
-            raise errors.MatrixRejectedError

@@ -1,35 +1,34 @@
 # Oliver Gordon, 2019
 
-from time import sleep
-
-import numpy as np
-
 from nOmicron.mate import objects as mo
 
+# from selenium import webdriver
+# import chromedriver_autoinstaller
+#
+#
+# chromedriver_autoinstaller.install()  # Check if the current version of chromedriver exists
+#                                       # and if it doesn't exist, download it automatically,
+#                                       # then add chromedriver to path
+#
+# driver = webdriver.Chrome()
+# driver.get("http://www.python.org")
 
-def retract_and_move() -> None:
-    """Retract the tip, move a few coarse steps in a random direction, and reapproach"""
-    from nOmicron.microscope import black_box
-
-    mo.experiment.stop()
-    black_box.backward()
-    rand_dir = np.random.rand()
-    rand_steps = np.random.randint(low=5, high=10)
-    if rand_dir < 0.25:
-        black_box.x_minus(rand_steps)
-    elif rand_dir < 0.5:
-        black_box.x_plus(rand_steps)
-    elif rand_dir < 0.75:
-        black_box.y_plus(rand_steps)
-    else:
-        black_box.y_minus(rand_steps)
-    sleep(0.1)
-    black_box.auto_approach()
-    mo.experiment.start()
+def set_gap_voltage(voltage):
+    mo.gap_voltage_control.Voltage(voltage)
 
 
-# TODO get upper/lower values from .expd file containing calib.
-# TODO user parameter for allowing selection between green/yellow/red
-def is_z_range_valid(min_max=(-650e-9, 650e-9)) -> bool:
-    """Test if tip is regulating in the red/yellow/green part of the z regulation window"""
-    return min_max[0] <= mo.regulator.Z_Out() <= min_max[1]
+def approach(v_gap, cautiousness):
+    modes = {"Super Cautious": {"Loop_Gain_I": 3, "I_Setpoint": 50e-12},
+             "Cautious": {"Loop_Gain_I": 3, "I_Setpoint": 50e-12},
+             "Normal": {"Loop_Gain_I": 3, "I_Setpoint": 50e-12},
+             "YOLO": {"Loop_Gain_I": 3, "I_Setpoint": 50e-12}}
+
+    mo.regulator.Preamp_Range_1(0)
+    mo.regulator.Loop_Gain_1_I(modes[cautiousness["Loop_Gain_I"]])
+    mo.regulator.Setpoint_1(modes[cautiousness["I_Setpoint"]])
+    mo.gap_voltage_control.Voltage(v_gap)
+
+    print("Ready to beginning approach...")
+    while not mo.regulator.Setpoint_Detected():
+        pass
+    print("Approach finished.")

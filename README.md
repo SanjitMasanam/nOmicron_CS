@@ -3,6 +3,8 @@
 
 ### About
 
+Note: This is an updated version of nOmicron with a Compressed Sensing<sup>[(1)](https://journals.aps.org/prresearch/pdf/10.1103/PhysRevResearch.3.043040)[(2)](https://journals.aps.org/prresearch/pdf/10.1103/PhysRevResearch.2.023117)</sup> implementation.
+
 Python API for interacting with Scienta Omicron Matrix (via the MATE scripting language).
 
 A fork of Stephan Zevenhuizen's [MATE-for-Dummies](https://pypi.org/project/MATE-for-Dummies/), 
